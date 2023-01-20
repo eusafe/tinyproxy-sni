@@ -50,6 +50,7 @@ struct config_s {
         vector_t listen_addrs;
 #ifdef FILTER_ENABLE
         char *filter;
+ 	char *filter_httpswhitelist;
         unsigned int filter_url;        /* boolean */
         unsigned int filter_extended;   /* boolean */
         unsigned int filter_casesensitive;      /* boolean */

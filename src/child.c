@@ -174,6 +174,7 @@ static void child_sighup_handler (int sig)
 
 #ifdef FILTER_ENABLE
                 filter_reload ();
+		filter_https_reload();
 #endif /* FILTER_ENABLE */
         }
 }
@@ -516,6 +517,7 @@ void child_main_loop (void)
 
 #ifdef FILTER_ENABLE
                         filter_reload ();
+			filter_https_reload();
 #endif /* FILTER_ENABLE */
 
                         /* propagate filter reload to all children */

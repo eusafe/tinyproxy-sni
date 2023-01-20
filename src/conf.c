@@ -130,6 +130,7 @@ static HANDLE_FUNC (handle_errorfile);
 static HANDLE_FUNC (handle_addheader);
 #ifdef FILTER_ENABLE
 static HANDLE_FUNC (handle_filter);
+static HANDLE_FUNC (handle_filterhttpswhitelist);
 static HANDLE_FUNC (handle_filtercasesensitive);
 static HANDLE_FUNC (handle_filterdefaultdeny);
 static HANDLE_FUNC (handle_filterextended);
@@ -241,6 +242,7 @@ struct {
 #ifdef FILTER_ENABLE
         /* filtering */
         STDCONF ("filter", STR, handle_filter),
+	STDCONF ("filterhttpswhitelist", STR, handle_filterhttpswhitelist),
         STDCONF ("filterurls", BOOL, handle_filterurls),
         STDCONF ("filterextended", BOOL, handle_filterextended),
         STDCONF ("filterdefaultdeny", BOOL, handle_filterdefaultdeny),
@@ -299,6 +301,8 @@ static void free_config (struct config_s *conf)
         vector_delete(conf->basicauth_list);
 #ifdef FILTER_ENABLE
         safefree (conf->filter);
+	safefree (conf->filter_httpswhitelist);
+
 #endif                          /* FILTER_ENABLE */
 #ifdef REVERSE_SUPPORT
         free_reversepath_list(conf->reversepath_list);
@@ -491,6 +495,10 @@ static void initialize_with_defaults (struct config_s *conf,
         if (defaults->filter) {
                 conf->filter = safestrdup (defaults->filter);
         }
+
+	if(defaults->filter_httpswhitelist) {
+		conf->filter_httpswhitelist = safestrdup(defaults->filter_httpswhitelist);
+	}
 
         conf->filter_url = defaults->filter_url;
         conf->filter_extended = defaults->filter_extended;
@@ -1021,6 +1029,11 @@ static HANDLE_FUNC (handle_filter)
 static HANDLE_FUNC (handle_filterurls)
 {
         return set_bool_arg (&conf->filter_url, line, &match[2]);
+}
+
+static HANDLE_FUNC (handle_filterhttpswhitelist)
+{
+	return set_string_arg(&conf->filter_httpswhitelist, line, &match[2]);
 }
 
 static HANDLE_FUNC (handle_filterextended)

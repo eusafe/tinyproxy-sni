@@ -41,8 +41,101 @@ struct filter_list {
 };
 
 static struct filter_list *fl = NULL;
+static struct filter_list *fl_https = NULL;
 static int already_init = 0;
+static int https_already_init = 0;
 static filter_policy_t default_policy = FILTER_DEFAULT_ALLOW;
+
+
+/*
+ * Initializes a linked list of strings containing https hosts/urls to be filtered
+ */
+void filter_https_init (void)
+{
+        FILE *fd;
+        struct filter_list *p;
+        char buf[FILTER_BUFFER_LEN];
+        char *s;
+        int cflags;
+
+        if (fl_https || https_already_init) {
+                return;
+        }
+
+        fd = fopen (config.filter_httpswhitelist, "r");
+        if (!fd) {
+                return;
+        }
+
+        p = NULL;
+
+        cflags = REG_NEWLINE | REG_NOSUB;
+        if (config.filter_extended)
+                cflags |= REG_EXTENDED;
+        if (!config.filter_casesensitive)
+                cflags |= REG_ICASE;
+
+        while (fgets (buf, FILTER_BUFFER_LEN, fd)) {
+                /*
+                 * Remove any trailing white space and
+                 * comments.
+                 */
+                s = buf;
+                while (*s) {
+                        if (isspace ((unsigned char) *s))
+                                break;
+                        if (*s == '#') {
+                                /*
+                                 * If the '#' char is preceeded by
+                                 * an escape, it's not a comment
+                                 * string.
+                                 */
+                                if (s == buf || *(s - 1) != '\\')
+                                        break;
+                        }
+                        ++s;
+                }
+                *s = '\0';
+
+                /* skip leading whitespace */
+                s = buf;
+                while (*s && isspace ((unsigned char) *s))
+                        s++;
+
+                /* skip blank lines and comments */
+                if (*s == '\0')
+                        continue;
+
+                if (!p) /* head of list */
+                        fl_https = p =
+                            (struct filter_list *)
+                            safecalloc (1, sizeof (struct filter_list));
+                else {  /* next entry */
+                        p->next =
+                            (struct filter_list *)
+                            safecalloc (1, sizeof (struct filter_list));
+                        p = p->next;
+                }
+
+                p->pat = safestrdup (s);
+                p->cpat = (regex_t *) safemalloc (sizeof (regex_t));
+                err = regcomp (p->cpat, p->pat, cflags);
+                if (err != 0) {
+                        fprintf (stderr,
+                                 "Bad regex in %s: %s\n",
+                                 config.filter_httpswhitelist, p->pat);
+                        exit (EX_DATAERR);
+                }
+        }
+        if (ferror (fd)) {
+                perror ("fgets");
+                exit (EX_DATAERR);
+        }
+        fclose (fd);
+
+        https_already_init = 1;
+}
+
 
 /*
  * Initializes a linked list of strings containing hosts/urls to be filtered
@@ -134,6 +227,25 @@ void filter_init (void)
         already_init = 1;
 }
 
+
+/* unlink the list */
+void filter_https_destroy (void)
+{
+        struct filter_list *p, *q;
+
+        if (https_already_init) {
+                for (p = q = fl_https; p; p = q) {
+                        regfree (p->cpat);
+                        safefree (p->cpat);
+                        safefree (p->pat);
+                        q = p->next;
+                        safefree (p);
+                }
+                fl_https = NULL;
+                https_already_init = 0;
+        }
+}
+
 /* unlink the list */
 void filter_destroy (void)
 {
@@ -149,6 +261,19 @@ void filter_destroy (void)
                 }
                 fl = NULL;
                 already_init = 0;
+        }
+}
+
+
+/**
+ * reload the filter file if filtering is enabled
+ */
+void filter_https_reload (void)
+{
+        if (config.filter_httpswhitelist) {
+                log_message (LOG_NOTICE, "Re-reading https whiltelist file.");
+                filter_https_destroy ();
+                filter_https_init ();
         }
 }
 
@@ -184,6 +309,33 @@ int filter_domain (const char *host)
                                 return 0;
                 }
         }
+
+COMMON_EXIT:
+        if (default_policy == FILTER_DEFAULT_ALLOW)
+                return 0;
+        else
+                return 1;
+}
+
+/* returns 0 to allow, non-zero to block */
+int filter_https_url (const char *url)
+{
+        struct filter_list *p;
+        int result;
+
+        if (!fl_https || !https_already_init)
+                goto COMMON_EXIT;
+
+        for (p = fl_https; p; p = p->next) {
+                result =
+                    regexec (p->cpat, url, (size_t) 0, (regmatch_t *) 0, 0);
+
+                if (result == 0) {
+                	return 1;
+                }
+        }
+
+	return 0;
 
 COMMON_EXIT:
         if (default_policy == FILTER_DEFAULT_ALLOW)

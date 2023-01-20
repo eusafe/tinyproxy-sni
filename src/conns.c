@@ -89,7 +89,13 @@ struct conn_s *initialize_conn (int client_fd, const char *ipaddr,
         connptr->reversepath = NULL;
 #endif
 
-        return connptr;
+	connptr->server_name_indication = NULL;
+	connptr->is_ssl = 0;
+	connptr->ssl_handshake = NULL;
+	connptr->ssl_handshake_len = 0;
+	connptr->tls_major_ver = 0;
+	connptr->tls_minor_ver = 0;        
+	return connptr;
 
 error_exit:
         /*
@@ -142,7 +148,13 @@ void destroy_conn (struct conn_s *connptr)
                 safefree (connptr->reversepath);
 #endif
 
-        safefree (connptr);
+	if(connptr->server_name_indication)
+		safefree(connptr->server_name_indication);
+
+	if(connptr->ssl_handshake)
+		safefree(connptr->ssl_handshake);
+
+	safefree (connptr);
 
         update_stats (STAT_CLOSE);
 }

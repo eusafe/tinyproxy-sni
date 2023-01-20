@@ -35,6 +35,7 @@
 #include "hashmap.h"
 #include "heap.h"
 #include "html-error.h"
+#include "tls-error.h"
 #include "log.h"
 #include "network.h"
 #include "reqs.h"
@@ -82,6 +83,233 @@
 #define CHECK_LWS(header, len)                                  \
   ((len) > 0 && (header[0] == ' ' || header[0] == '\t'))
 
+#define TLS_HANDSHAKE_CODE 0x16
+#define TLS_MIN_LEN  0x02
+#define TLS_HEADER_LEN 0x05
+#define TLS_TYPE_CLIENT_HELLO 0x01
+#define MSG_SIZE_BYTES 0x02
+#define MSG_SIZE_OFFSET 0x03
+/*
+ * Check if a TLS client hello has been sent.
+ * If so there is interest to know if TLS extensions are set and to what host
+ * it is trying to be sent to.
+ */
+static int check_for_tls(struct conn_s *connptr, ssize_t len)
+{
+	ssize_t count = len;
+	ssize_t bytes_read = 0;
+	char *buff;
+	ssize_t name_len;
+	ssize_t ext_len;
+	ssize_t data_len;
+	ssize_t msg_len;
+	ssize_t pos = TLS_HEADER_LEN;
+	ssize_t name_pos = 0;
+	ssize_t ext_pos;
+	char *tls_msg_buff;
+	char msg_header[TLS_HEADER_LEN];
+	char tls_major_version;
+	char tls_minor_version;
+
+	memset(msg_header,0,sizeof(msg_header));
+	/*
+	 * Check that we have at least the TLS min len number of bytes. The request_line is comming in
+	 * from a readline and TLS might have a inor verions number of 0 in the third byte which could 
+	 * terminiate the readline.
+	 */
+	if(len >= TLS_MIN_LEN)
+	{
+		if(connptr->request_line[0] == TLS_HANDSHAKE_CODE) 
+		{
+			connptr->is_ssl = 1;
+			log_message( LOG_INFO, "possible TLS handshake. Looking for Server Name in extensions.");
+			
+			/* get the lenght of the message and read the rest */
+			if(len >= TLS_HEADER_LEN) 
+			{
+				tls_major_version = connptr->request_line[1];
+				tls_minor_version = connptr->request_line[2];
+				memcpy(msg_header, connptr->request_line, TLS_HEADER_LEN);
+			}
+			/* need to read to find the message size */
+			else
+			{
+		       		memcpy(msg_header, connptr->request_line, len);
+
+			  	do
+		          	{
+					buff = (char *) safemalloc(TLS_HEADER_LEN - count);
+					if(NULL == buff)
+					{
+						return -1;
+					}
+					bytes_read = read(connptr->client_fd, buff, TLS_HEADER_LEN - count);
+                                	memcpy(msg_header + TLS_HEADER_LEN - count, buff, bytes_read);
+					safefree(buff);
+					count += bytes_read;  	
+			  	}
+			  	while(count < TLS_MIN_LEN);	
+			  	tls_major_version = msg_header[1];
+				tls_minor_version = msg_header[2];
+			}
+			
+			msg_len = ((unsigned char)msg_header[3] << 8) + (unsigned char)msg_header[4];
+			connptr->tls_major_ver = tls_major_version;
+			connptr->tls_minor_ver = tls_minor_version;	
+			if(tls_major_version < 3 || (tls_major_version == 3 && tls_minor_version < 1)) 
+			{
+				log_message( LOG_INFO, 
+						"TLS handshake does not support Server Name Indication. Version %d.%d", 
+						tls_major_version, tls_minor_version);
+				return -3;
+			}
+
+			tls_msg_buff = (char *) safemalloc(TLS_HEADER_LEN + msg_len);
+			if(NULL == tls_msg_buff)
+			{
+				return -1;
+			}
+			memset(tls_msg_buff, 0, TLS_HEADER_LEN + msg_len);
+			memcpy(tls_msg_buff, msg_header, TLS_HEADER_LEN);
+			/* need to copy the rest of the input if count is less then the msg_len */
+			if(count < msg_len + TLS_HEADER_LEN)
+			{
+				memcpy(tls_msg_buff + TLS_HEADER_LEN, connptr->request_line + TLS_HEADER_LEN, count);
+				do
+				{
+					buff = (char *) safemalloc(msg_len + TLS_HEADER_LEN - count);
+					if(NULL == buff)
+					{
+						safefree(tls_msg_buff);
+						return -1;
+					}
+					bytes_read = read(connptr->client_fd, buff, msg_len + TLS_HEADER_LEN - count);
+					memcpy(tls_msg_buff + count, buff, bytes_read); 
+					count += bytes_read;
+					safefree(buff);
+				}
+				while(count < (msg_len + TLS_HEADER_LEN));
+			}
+
+			if(tls_msg_buff[pos] != TLS_TYPE_CLIENT_HELLO)
+			{
+				log_message( LOG_INFO,
+						"TLS handshake is not a client hello message type.");
+				safefree(tls_msg_buff);
+				return -2;
+			}
+
+			/* don't care about stuff in between so jump to the items with offsets so we can skip everything not needed */
+			pos += 38;
+
+
+			/* Session ID */
+			if(pos + 1 > (msg_len + TLS_HEADER_LEN))
+			{
+				safefree(tls_msg_buff);
+				return -1;
+			}
+
+			data_len = (unsigned char)tls_msg_buff[pos];
+			pos += 1 + data_len;
+
+			/* In the ciphers */
+			if(pos + 2 > (msg_len + TLS_HEADER_LEN))
+			{
+				safefree(tls_msg_buff);
+				return -1;
+			}
+
+			data_len = ((unsigned char)tls_msg_buff[pos] << 8) + (unsigned char)tls_msg_buff[pos + 1];
+			pos += 2 + data_len;
+
+			/*In the compression */
+			if(pos + 1 > (msg_len + TLS_HEADER_LEN))
+			{
+				safefree(tls_msg_buff);
+				return -1;
+			}
+
+			data_len = (unsigned char)tls_msg_buff[pos];
+			pos += 1 + data_len;
+
+			/*In the extensions*/
+			if(pos + 2 > (msg_len + TLS_HEADER_LEN))
+			{
+				safefree(tls_msg_buff);
+				return -1;
+			}
+
+			data_len = ((unsigned char)tls_msg_buff[pos] << 8) + (unsigned char)tls_msg_buff[pos + 1];
+			pos += 2;
+
+			/* sanity check */
+			if(pos + data_len > (msg_len + TLS_HEADER_LEN))
+			{
+				safefree(tls_msg_buff);
+				return -1;
+			}
+
+			/* Skip over the extensions */
+			ext_pos = 0;
+			while(ext_pos + 4 < data_len)
+			{
+				/* Extenstion length */
+				ext_len = ((unsigned char)tls_msg_buff[pos + ext_pos + 2] << 8) + (unsigned char)tls_msg_buff[pos + ext_pos + 3];
+				/* check if this a server name */
+				if(tls_msg_buff[pos + ext_pos] == 0x00 && tls_msg_buff[pos + ext_pos + 1] == 0x00)
+				{
+					if((pos + ext_pos + 4 + ext_len) > (msg_len + TLS_HEADER_LEN))
+					{
+						safefree(tls_msg_buff);
+						return -1;
+					}
+
+					name_pos = 6;
+					while((name_pos + 3) < ext_len) 
+					{
+						name_len = ((unsigned char)tls_msg_buff[pos + ext_pos + name_pos + 1] << 8) + (unsigned char)tls_msg_buff[pos + ext_pos + name_pos + 2];
+
+						if((pos + ext_pos + name_pos + 3 + name_len) > (msg_len + TLS_HEADER_LEN))
+						{
+							safefree(tls_msg_buff);
+							return -1;
+						}
+						/*check for host name type*/
+						if(tls_msg_buff[pos + ext_pos + name_pos] == 0x00)
+						{
+							connptr->server_name_indication = (char *) safemalloc(name_len + 1);
+							if(NULL == connptr->server_name_indication)
+							{
+								safefree(tls_msg_buff);
+								return -1;
+							}
+							memset(connptr->server_name_indication, 0, name_len + 1);
+							memcpy(connptr->server_name_indication, tls_msg_buff + pos + ext_pos + name_pos + 3, name_len);
+							connptr->ssl_handshake = (char *)safemalloc(TLS_HEADER_LEN + msg_len);
+							memcpy(connptr->ssl_handshake, tls_msg_buff, TLS_HEADER_LEN + msg_len);
+							connptr->ssl_handshake_len = TLS_HEADER_LEN + msg_len;
+							return 0;
+
+						}
+						name_pos += 3 + name_len;
+					}
+				}
+				ext_pos += 4 + ext_len;
+			}
+
+			if(pos + ext_pos + name_pos != (msg_len + TLS_HEADER_LEN))
+			{
+				return -1;
+			}
+
+			return -2;
+		}
+	}	
+
+	return 0;	
+}
+
 /*
  * Read in the first line from the client (the request line for HTTP
  * connections. The request line is allocated from the heap, but it must
@@ -90,7 +318,8 @@
 static int read_request_line (struct conn_s *connptr)
 {
         ssize_t len;
-
+	int first_read = 0;
+	int tls_check_ret = 0; 
 retry:
         len = readline (connptr->client_fd, &connptr->request_line);
         if (len <= 0) {
@@ -101,21 +330,48 @@ retry:
                 return -1;
         }
 
-        /*
-         * Strip the new line and carriage return from the string.
-         */
-        if (chomp (connptr->request_line, len) == len) {
-                /*
-                 * If the number of characters removed is the same as the
-                 * length then it was a blank line. Free the buffer and
-                 * try again (since we're looking for a request line.)
-                 */
-                safefree (connptr->request_line);
-                goto retry;
-        }
+	if(0 == first_read)
+	{
+		tls_check_ret = check_for_tls(connptr,len);
 
-        log_message (LOG_CONN, "Request (file descriptor %d): %s",
-                     connptr->client_fd, connptr->request_line);
+		switch(tls_check_ret)
+		{
+			case 0:
+				return 0;
+			case -1:
+				log_message(LOG_ERR,
+					"read_request_line: Error checking for tls handshake");
+				return -1;
+			case -2:
+				log_message(LOG_ERR,
+					"read_request_line: Most likey an unsupported TLS handshake");
+				return 0;
+			case -3:
+				/* already logged */
+				return 0;
+			default:
+				log_message(LOG_ERR, "read_request_line: Unknown ret value check_for_tls (var: %d", tls_check_ret);
+				return -1;
+		}	
+	}
+	else
+	{
+		/*
+		 * Strip the new line and carriage return from the string.
+		 */
+		if (chomp (connptr->request_line, len) == len) {
+			/*
+			 * If the number of characters removed is the same as the
+			 * length then it was a blank line. Free the buffer and
+			 * try again (since we're looking for a request line.)
+			 */
+			safefree (connptr->request_line);
+			goto retry;
+		}
+
+		log_message (LOG_CONN, "Request (file descriptor %d): %s",
+			     connptr->client_fd, connptr->request_line);
+	}
 
         return 0;
 }
@@ -451,7 +707,7 @@ BAD_REQUEST_ERROR:
         }
 
 #ifdef FILTER_ENABLE
-        /*
+	/*
          * Filter restricted domains/urls
          */
         if (config.filter) {
@@ -1580,34 +1836,6 @@ void handle_connection (int fd)
                 goto fail;
         }
 
-        /*
-         * The "hashofheaders" store the client's headers.
-         */
-        hashofheaders = hashmap_create (HEADER_BUCKETS);
-        if (hashofheaders == NULL) {
-                update_stats (STAT_BADCONN);
-                indicate_http_error (connptr, 503, "Internal error",
-                                     "detail",
-                                     "An internal server error occurred while processing "
-                                     "your request. Please contact the administrator.",
-                                     NULL);
-                goto fail;
-        }
-
-        /*
-         * Get all the headers from the client in a big hash.
-         */
-        if (get_all_headers (connptr->client_fd, hashofheaders) < 0) {
-                log_message (LOG_WARNING,
-                             "Could not retrieve all the headers from the client");
-                indicate_http_error (connptr, 400, "Bad Request",
-                                     "detail",
-                                     "Could not retrieve all the headers from "
-                                     "the client.", NULL);
-                update_stats (STAT_BADCONN);
-                goto fail;
-        }
-
         if (config.basicauth_list != NULL) {
                 ssize_t len;
                 char *authstring;
@@ -1652,81 +1880,158 @@ e401:
                 hashmap_remove (hashofheaders, "proxy-authorization");
         }
 
-        /*
-         * Add any user-specified headers (AddHeader directive) to the
-         * outgoing HTTP request.
-         */
-        for (i = 0; i < vector_length (config.add_headers); i++) {
-                http_header_t *header = (http_header_t *)
-                        vector_getentry (config.add_headers, i, NULL);
+	if(1 == connptr->is_ssl)
+	{
+		if(NULL != connptr->server_name_indication && 
+			connptr->ssl_handshake_len > 0 && 
+			NULL != connptr->ssl_handshake)
+		{
+			/* check the https whitelist for the server_name_indication 
+			   If it is not in the list then don't connect */
+#ifdef FILTER_ENABLE
+			if(config.filter_httpswhitelist) 
+			{
+				if(0 != filter_https_url(connptr->server_name_indication))
+				{
+					send_tls_alert(connptr->client_fd, connptr->tls_major_ver, connptr->tls_minor_ver, 0x02, 
+						TLS_ALERT_TYPE_FATAL, TLS_DESC_HANDSHAKE_FAILURE, NULL, 0,  NULL, 0);
+					goto fail;
+				}
+			}
+#endif
+			connptr->server_fd = opensock (connptr->server_name_indication, HTTP_PORT_SSL,
+						       connptr->server_ip_addr);
+			if (connptr->server_fd < 0) {
+				/*send_tls_alert(connptr->client_fd, connptr->tls_major_ver, connptr->tls_minor_ver, 0x02, 
+					TLS_ALERT_TYPE_FATAL, TLS_DESC_HANDSHAKE_FAILURE, 
+					NULL, 0,  NULL, 0);*/
+				goto fail;
+			}
 
-                hashmap_insert (hashofheaders,
-                                header->name,
-                                header->value, strlen (header->value) + 1);
-        }
+			log_message (LOG_CONN,
+				     "Established connection to host \"%s\" using "
+				     "file descriptor %d.", connptr->server_name_indication,
+				     connptr->server_fd);
 
-        request = process_request (connptr, hashofheaders);
-        if (!request) {
-                if (!connptr->show_stats) {
-                        update_stats (STAT_BADCONN);
-                }
-                goto fail;
-        }
+			safe_write(connptr->server_fd, connptr->ssl_handshake, connptr->ssl_handshake_len);
+			relay_connection (connptr);
+			goto done;
+		}
+		else
+		{
+			send_tls_alert(connptr->client_fd, connptr->tls_major_ver, connptr->tls_minor_ver, 0x02, 
+				TLS_ALERT_TYPE_FATAL, TLS_DESC_HANDSHAKE_FAILURE, NULL, 0,  NULL, 0);
+			goto fail;
+		}
 
-        connptr->upstream_proxy = UPSTREAM_HOST (request->host);
-        if (connptr->upstream_proxy != NULL) {
-                if (connect_to_upstream (connptr, request) < 0) {
-                        goto fail;
-                }
-        } else {
-                connptr->server_fd = opensock (request->host, request->port,
-                                               connptr->server_ip_addr);
-                if (connptr->server_fd < 0) {
-                        indicate_http_error (connptr, 500, "Unable to connect",
-                                             "detail",
-                                             PACKAGE_NAME " "
-                                             "was unable to connect to the remote web server.",
-                                             "error", strerror (errno), NULL);
-                        goto fail;
-                }
+	}
+	else
+	{
 
-                log_message (LOG_CONN,
-                             "Established connection to host \"%s\" using "
-                             "file descriptor %d.", request->host,
-                             connptr->server_fd);
+		/*
+		 * The "hashofheaders" store the client's headers.
+		 */
+		hashofheaders = hashmap_create (HEADER_BUCKETS);
+		if (hashofheaders == NULL) {
+			update_stats (STAT_BADCONN);
+			indicate_http_error (connptr, 503, "Internal error",
+					     "detail",
+					     "An internal server error occurred while processing "
+					     "your request. Please contact the administrator.",
+					     NULL);
+			goto fail;
+		}
 
-                if (!connptr->connect_method)
-                        establish_http_connection (connptr, request);
-        }
+		/*
+		 * Get all the headers from the client in a big hash.
+		 */
+		if (get_all_headers (connptr->client_fd, hashofheaders) < 0) {
+			log_message (LOG_WARNING,
+				     "Could not retrieve all the headers from the client");
+			indicate_http_error (connptr, 400, "Bad Request",
+					     "detail",
+					     "Could not retrieve all the headers from "
+					     "the client.", NULL);
+			update_stats (STAT_BADCONN);
+			goto fail;
+		}
 
-        if (process_client_headers (connptr, hashofheaders) < 0) {
-                update_stats (STAT_BADCONN);
-                goto fail;
-        }
+		/*
+		 * Add any user-specified headers (AddHeader directive) to the
+		 * outgoing HTTP request.
+		 */
+		for (i = 0; i < vector_length (config.add_headers); i++) {
+			http_header_t *header = (http_header_t *)
+				vector_getentry (config.add_headers, i, NULL);
 
-        if (!connptr->connect_method || UPSTREAM_IS_HTTP(connptr)) {
-                if (process_server_headers (connptr) < 0) {
-                        update_stats (STAT_BADCONN);
-                        goto fail;
-                }
-        } else {
-                if (send_ssl_response (connptr) < 0) {
-                        log_message (LOG_ERR,
-                                     "handle_connection: Could not send SSL greeting "
-                                     "to client.");
-                        update_stats (STAT_BADCONN);
-                        goto fail;
-                }
-        }
+			hashmap_insert (hashofheaders,
+					header->name,
+					header->value, strlen (header->value) + 1);
+		}
 
-        relay_connection (connptr);
+		request = process_request (connptr, hashofheaders);
+		if (!request) {
+			if (!connptr->show_stats) {
+				update_stats (STAT_BADCONN);
+			}
+			goto fail;
+		}
 
-        log_message (LOG_INFO,
-                     "Closed connection between local client (fd:%d) "
-                     "and remote client (fd:%d)",
-                     connptr->client_fd, connptr->server_fd);
+		connptr->upstream_proxy = UPSTREAM_HOST (request->host);
+		if (connptr->upstream_proxy != NULL) {
+			if (connect_to_upstream (connptr, request) < 0) {
+				goto fail;
+			}
+		} else {
+			connptr->server_fd = opensock (request->host, request->port,
+						       connptr->server_ip_addr);
+			if (connptr->server_fd < 0) {
+				indicate_http_error (connptr, 500, "Unable to connect",
+						     "detail",
+						     PACKAGE_NAME " "
+						     "was unable to connect to the remote web server.",
+						     "error", strerror (errno), NULL);
+				goto fail;
+			}
 
-        goto done;
+			log_message (LOG_CONN,
+				     "Established connection to host \"%s\" using "
+				     "file descriptor %d.", request->host,
+				     connptr->server_fd);
+
+			if (!connptr->connect_method)
+				establish_http_connection (connptr, request);
+		}
+
+		if (process_client_headers (connptr, hashofheaders) < 0) {
+			update_stats (STAT_BADCONN);
+			goto fail;
+		}
+
+		if (!(connptr->connect_method && (connptr->upstream_proxy == NULL))) {
+			if (process_server_headers (connptr) < 0) {
+				update_stats (STAT_BADCONN);
+				goto fail;
+			}
+		} else {
+			if (send_ssl_response (connptr) < 0) {
+				log_message (LOG_ERR,
+					     "handle_connection: Could not send SSL greeting "
+					     "to client.");
+				update_stats (STAT_BADCONN);
+				goto fail;
+			}
+		}
+
+		relay_connection (connptr);
+
+		log_message (LOG_INFO,
+			     "Closed connection between local client (fd:%d) "
+			     "and remote client (fd:%d)",
+			     connptr->client_fd, connptr->server_fd);
+
+		goto done;
+	}
 
 fail:
         /*

@@ -86,6 +86,13 @@ struct conn_s {
          * Pointer to upstream proxy.
          */
         struct upstream *upstream_proxy;
+
+	char *server_name_indication;
+	int is_ssl;
+	char *ssl_handshake;
+	ssize_t ssl_handshake_len;
+	unsigned char tls_major_ver;
+	unsigned char tls_minor_ver;
 };
 
 /*
