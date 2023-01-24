@@ -39,4 +39,15 @@ extern void filter_destroy (void);
 extern void filter_reload (void);
 extern int filter_run (const char *str);
 
+/* HACK sni patch */
+typedef enum {
+        FILTER_DEFAULT_ALLOW,
+        FILTER_DEFAULT_DENY
+} filter_policy_t;
+
+extern void filter_https_init (void);
+extern void filter_https_destroy (void);
+extern void filter_https_reload (void);
+extern int filter_https_url (const char *url);
+
 #endif

@@ -36,6 +36,14 @@ void conn_struct_init(struct conn_s *connptr) {
         connptr->server_fd = -1;
         /* There is _no_ content length initially */
         connptr->content_length.server = connptr->content_length.client = -1;
+
+/*  HACK sni patch*/
+        connptr->server_name_indication = NULL;
+        connptr->is_ssl = 0;
+        connptr->ssl_handshake = NULL;
+        connptr->ssl_handshake_len = 0;
+        connptr->tls_major_ver = 0;
+        connptr->tls_minor_ver = 0;
 }
 
 int conn_init_contents (struct conn_s *connptr, const char *ipaddr,
@@ -123,6 +131,16 @@ void conn_destroy_contents (struct conn_s *connptr)
         if (connptr->reversepath)
                 safefree (connptr->reversepath);
 #endif
+
+/* HACK sni patch */
+        if(connptr->server_name_indication)
+            safefree(connptr->server_name_indication);
+
+        if(connptr->ssl_handshake)
+            safefree(connptr->ssl_handshake);
+
+        safefree (connptr);
+
 
         update_stats (STAT_CLOSE);
 }

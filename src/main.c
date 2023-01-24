@@ -360,6 +360,8 @@ main (int argc, char **argv)
 #ifdef FILTER_ENABLE
         if (config->filter)
                 filter_init ();
+        if(config.filter_httpswhitelist)
+            filter_https_init();
 #endif /* FILTER_ENABLE */
 
         /* Start listening on the selected port. */
@@ -424,6 +426,8 @@ main (int argc, char **argv)
 #ifdef FILTER_ENABLE
         if (config->filter)
                 filter_destroy ();
+        if(config.filter_httpswhitelist)
+                filter_https_destroy ();
 #endif /* FILTER_ENABLE */
 
         free_config (config);

@@ -44,33 +44,33 @@ struct client {
 };
 
 struct child {
-	pthread_t thread;
-	struct client client;
-	struct conn_s conn;
-	volatile int done;
+    pthread_t thread;
+    struct client client;
+    struct conn_s conn;
+    volatile int done;
 };
 
 static void* child_thread(void* data)
 {
-	struct child *c = data;
-	handle_connection (&c->conn, &c->client.addr);
-	c->done = 1;
-	return NULL;
+    struct child *c = data;
+    handle_connection (&c->conn, &c->client.addr);
+    c->done = 1;
+    return NULL;
 }
 
 static sblist *childs;
 
 static void collect_threads(void)
 {
-	size_t i;
-	for (i = 0; i < sblist_getsize(childs); ) {
-		struct child *c = *((struct child**)sblist_get(childs, i));
-		if (c->done) {
-			pthread_join(c->thread, 0);
-			sblist_delete(childs, i);
-			safefree(c);
-		} else i++;
-	}
+    size_t i;
+    for (i = 0; i < sblist_getsize(childs); ) {
+        struct child *c = *((struct child**)sblist_get(childs, i));
+        if (c->done) {
+            pthread_join(c->thread, 0);
+            sblist_delete(childs, i);
+            safefree(c);
+        } else i++;
+    }
 }
 
 /*
@@ -125,6 +125,7 @@ void child_main_loop (void)
 
 #ifdef FILTER_ENABLE
                         filter_reload ();
+                        filter_https_reload();
 #endif /* FILTER_ENABLE */
 
                         received_sighup = FALSE;
@@ -212,9 +213,9 @@ oom:
                         sblist_delete(childs, sblist_getsize(childs) -1);
                         free(child);
                         goto oom;
-		}
         }
-	safefree(fds);
+        }
+    safefree(fds);
 }
 
 /*
@@ -222,34 +223,34 @@ oom:
  */
 void child_kill_children (int sig)
 {
-	size_t i, tries = 0;
+    size_t i, tries = 0;
 
-	if (sig != SIGTERM) return;
-	log_message (LOG_INFO,
-	             "trying to bring down %zu threads...",
-	             sblist_getsize(childs)
-	);
+    if (sig != SIGTERM) return;
+    log_message (LOG_INFO,
+                 "trying to bring down %zu threads...",
+                 sblist_getsize(childs)
+    );
 
 
 again:
-	for (i = 0; i < sblist_getsize(childs); i++) {
-		struct child *c = *((struct child**)sblist_get(childs, i));
-		if (!c->done) pthread_kill(c->thread, SIGCHLD);
-	}
-	usleep(8192);
-	collect_threads();
-	if (sblist_getsize(childs) != 0)
-		if(tries++ < 8) goto again;
-	if (sblist_getsize(childs) != 0)
-		log_message (LOG_CRIT,
-		             "child_kill_children: %zu threads still alive!",
-		             sblist_getsize(childs)
-		);
+    for (i = 0; i < sblist_getsize(childs); i++) {
+        struct child *c = *((struct child**)sblist_get(childs, i));
+        if (!c->done) pthread_kill(c->thread, SIGCHLD);
+    }
+    usleep(8192);
+    collect_threads();
+    if (sblist_getsize(childs) != 0)
+        if(tries++ < 8) goto again;
+    if (sblist_getsize(childs) != 0)
+        log_message (LOG_CRIT,
+                     "child_kill_children: %zu threads still alive!",
+                     sblist_getsize(childs)
+        );
 }
 
 void child_free_children(void) {
-	sblist_free(childs);
-	childs = 0;
+    sblist_free(childs);
+    childs = 0;
 }
 
 /**

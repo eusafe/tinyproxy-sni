@@ -37,6 +37,7 @@ tinyproxy_SOURCES = \
 	heap.c heap.h \
 	html-error.c html-error.h \
 	http-message.c http-message.h \
+	tls-error.c tls-error.h \
 	log.c log.h \
 	network.c network.h \
 	reqs.c reqs.h \

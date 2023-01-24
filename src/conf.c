@@ -131,6 +131,7 @@ static HANDLE_FUNC (handle_errorfile);
 static HANDLE_FUNC (handle_addheader);
 #ifdef FILTER_ENABLE
 static HANDLE_FUNC (handle_filter);
+static HANDLE_FUNC (handle_filterhttpswhitelist);
 static HANDLE_FUNC (handle_filtercasesensitive);
 static HANDLE_FUNC (handle_filterdefaultdeny);
 static HANDLE_FUNC (handle_filterextended);
@@ -231,6 +232,7 @@ struct {
 #ifdef FILTER_ENABLE
         /* filtering */
         STDCONF (filter, STR, handle_filter),
+        STDCONF ("filterhttpswhitelist", STR, handle_filterhttpswhitelist),
         STDCONF (filterurls, BOOL, handle_filterurls),
         STDCONF (filterextended, BOOL, handle_filterextended),
         STDCONF (filterdefaultdeny, BOOL, handle_filterdefaultdeny),
@@ -283,7 +285,7 @@ static void stringlist_free(sblist *sl) {
                 for(i = 0; i < sblist_getsize(sl); i++) {
                         s = sblist_get(sl, i);
                         if(s) safefree(*s);
-		}
+        }
                 sblist_free(sl);
         }
 }
@@ -302,6 +304,7 @@ void free_config (struct config_s *conf)
         stringlist_free(conf->bind_addrs);
 #ifdef FILTER_ENABLE
         safefree (conf->filter);
+        safefree (conf->filter_httpswhitelist);
 #endif                          /* FILTER_ENABLE */
 #ifdef REVERSE_SUPPORT
         free_reversepath_list(conf->reversepath_list);
@@ -971,6 +974,11 @@ static HANDLE_FUNC (handle_filterurls)
         return 0;
 }
 
+static HANDLE_FUNC (handle_filterhttpswhitelist)
+{
+    return set_string_arg(&conf->filter_httpswhitelist, line, &match[2]);
+}
+
 static HANDLE_FUNC (handle_filterextended)
 {
         warn_deprecated("FilterExtended, use FilterType", lineno);
@@ -1064,17 +1072,17 @@ static HANDLE_FUNC (handle_reversepath)
 
 static enum proxy_type pt_from_string(const char *s)
 {
-	static const char pt_map[][7] = {
-		[PT_NONE]   = "none",
-		[PT_HTTP]   = "http",
-		[PT_SOCKS4] = "socks4",
-		[PT_SOCKS5] = "socks5",
-	};
-	unsigned i;
-	for (i = 0; i < sizeof(pt_map)/sizeof(pt_map[0]); i++)
-		if (!strcmp(pt_map[i], s))
-			return i;
-	return PT_NONE;
+    static const char pt_map[][7] = {
+        [PT_NONE]   = "none",
+        [PT_HTTP]   = "http",
+        [PT_SOCKS4] = "socks4",
+        [PT_SOCKS5] = "socks5",
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(pt_map)/sizeof(pt_map[0]); i++)
+        if (!strcmp(pt_map[i], s))
+            return i;
+    return PT_NONE;
 }
 
 static HANDLE_FUNC (handle_upstream)
@@ -1110,7 +1118,7 @@ static HANDLE_FUNC (handle_upstream)
                 user = get_string_arg (line, &match[mi]);
         mi++;
 
-	if (match[mi].rm_so != -1)
+    if (match[mi].rm_so != -1)
                 pass = get_string_arg (line, &match[mi]);
         mi++;
 
